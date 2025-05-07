@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# 字幕自動校正腳本 v3.1
+# 字幕自動校正腳本 v3.2
 # 
 # 功能說明：
 # 1. 自動從corrections.txt讀取Claude提供的錯字修正建議
 # 2. 自動從known_words.txt讀取已知常見需要校正的文字
-# 3. 對SRT字幕檔進行批量校正
-# 4. 在執行腳本的資料夾下生成校正後的字幕檔
+# 3. 直接對SRT字幕檔進行批量校正（直接修改原檔）
+# 4. 在執行前會創建備份檔案以防止資料丟失
 #
 # 使用方法: ./auto_correct_subtitle.sh <subtitle.srt>
 # 例如: ./auto_correct_subtitle.sh my_subtitle.srt
@@ -15,12 +15,11 @@
 # - corrections.txt: Claude提供的錯字修正建議，格式為 "[時間戳記] 行號:原文:修正後 - 說明"
 # - known_words.txt: 已知常見需要校正的文字，格式為 "原文 > 修正後"
 # - <subtitle.srt>: 需要校正的字幕檔
-# - <subtitle.srt>.corrected: 校正後的字幕檔
 # - <subtitle.srt>.bak: 原始字幕檔的備份
 
 # 標題和版本資訊
 echo "==================================================="
-echo "           SRT 字幕自動校正腳本 v3.1              "
+echo "           SRT 字幕自動校正腳本 v3.2              "
 echo "==================================================="
 
 # 檢查參數
@@ -41,13 +40,12 @@ fi
 
 CORRECTIONS_FILE="$SCRIPT_DIR/corrections.txt"
 KNOWN_WORDS_FILE="$SCRIPT_DIR/known_words.txt"
-BACKUP_FILE="$SCRIPT_DIR/$(basename "$SRT_FILE").bak"
-OUTPUT_FILE="$SCRIPT_DIR/$(basename "$SRT_FILE").corrected"
+BACKUP_FILE="${SRT_FILE}.bak"
 
 echo "字幕檔案: $SRT_FILE"
 echo "Claude修正建議檔案: $CORRECTIONS_FILE"
 echo "已知錯字檔案: $KNOWN_WORDS_FILE"
-echo "輸出檔案: $OUTPUT_FILE"
+echo "備份檔案: $BACKUP_FILE"
 
 # 檢查SRT檔案是否存在
 if [ ! -f "$SRT_FILE" ]; then
@@ -86,17 +84,6 @@ fi
 # 創建備份
 cp "$SRT_FILE" "$BACKUP_FILE"
 echo "已創建備份檔案: $BACKUP_FILE"
-
-# 如果輸出檔案已存在，先清空它
-if [ -f "$OUTPUT_FILE" ]; then
-    echo "輸出檔案已存在，將被覆寫..."
-    > "$OUTPUT_FILE"
-else
-    touch "$OUTPUT_FILE"
-fi
-
-# 先複製原始檔案到輸出檔案
-cp "$SRT_FILE" "$OUTPUT_FILE"
 
 # 處理統計
 CORRECTIONS_COUNT=0
@@ -141,7 +128,7 @@ if [ "$HAS_CORRECTIONS" = true ]; then
             fi
             
             # 全文搜索原文
-            match_lines=$(grep -n "$original" "$OUTPUT_FILE" 2>/dev/null || echo "")
+            match_lines=$(grep -n "$original" "$SRT_FILE" 2>/dev/null || echo "")
             
             if [[ -n "$match_lines" ]]; then
                 # 取第一個匹配行
@@ -154,10 +141,10 @@ if [ "$HAS_CORRECTIONS" = true ]; then
                 
                 if [[ "$(uname)" == "Darwin" ]]; then
                     # macOS版本
-                    sed -i '' "${line_number}s/$original_escaped/$corrected_escaped/g" "$OUTPUT_FILE"
+                    sed -i '' "${line_number}s/$original_escaped/$corrected_escaped/g" "$SRT_FILE"
                 else
                     # Linux版本
-                    sed -i "${line_number}s/$original_escaped/$corrected_escaped/g" "$OUTPUT_FILE"
+                    sed -i "${line_number}s/$original_escaped/$corrected_escaped/g" "$SRT_FILE"
                 fi
                 
                 # 輸出修正訊息
@@ -210,7 +197,7 @@ if [ "$HAS_KNOWN_WORDS" = true ]; then
         fi
         
         # 計算替換前的行數
-        before_lines=$(wc -l < "$OUTPUT_FILE")
+        before_lines=$(wc -l < "$SRT_FILE")
         
         # 替換所有出現的錯字
         original_escaped=$(echo "$original" | sed 's/[\/&]/\\&/g')
@@ -220,19 +207,19 @@ if [ "$HAS_KNOWN_WORDS" = true ]; then
             # macOS版本
             if [ "$CASE_SENSITIVE" = true ]; then
                 # 區分大小寫替換
-                sed -i '' "s/$original_escaped/$corrected_escaped/g" "$OUTPUT_FILE"
+                sed -i '' "s/$original_escaped/$corrected_escaped/g" "$SRT_FILE"
             else
                 # 不區分大小寫替換
-                sed -i '' "s/$original_escaped/$corrected_escaped/gi" "$OUTPUT_FILE"
+                sed -i '' "s/$original_escaped/$corrected_escaped/gi" "$SRT_FILE"
             fi
         else
             # Linux版本
             if [ "$CASE_SENSITIVE" = true ]; then
                 # 區分大小寫替換
-                sed -i "s/$original_escaped/$corrected_escaped/g" "$OUTPUT_FILE"
+                sed -i "s/$original_escaped/$corrected_escaped/g" "$SRT_FILE"
             else
                 # 不區分大小寫替換
-                sed -i "s/$original_escaped/$corrected_escaped/gi" "$OUTPUT_FILE"
+                sed -i "s/$original_escaped/$corrected_escaped/gi" "$SRT_FILE"
             fi
         fi
         
@@ -244,7 +231,7 @@ if [ "$HAS_KNOWN_WORDS" = true ]; then
         fi
         
         # 計算替換後的行數（確保文件未損壞）
-        after_lines=$(wc -l < "$OUTPUT_FILE")
+        after_lines=$(wc -l < "$SRT_FILE")
         
         if [ "$before_lines" -eq "$after_lines" ]; then
             # 輸出修正訊息
@@ -253,7 +240,7 @@ if [ "$HAS_KNOWN_WORDS" = true ]; then
         else
             echo "警告: 替換 '$original' 後文件行數改變，可能發生錯誤！"
             # 還原到備份
-            cp "$BACKUP_FILE" "$OUTPUT_FILE"
+            cp "$BACKUP_FILE" "$SRT_FILE"
             echo "已還原到備份檔案！"
             exit 1
         fi
@@ -271,5 +258,5 @@ if [ $ERRORS_COUNT -gt 0 ]; then
     echo "遇到 $ERRORS_COUNT 個無法處理的建議。"
 fi
 echo "原始檔案備份為: $BACKUP_FILE"
-echo "修正後的檔案為: $OUTPUT_FILE"
+echo "原始檔案已被直接修改"
 echo "==================================================="
