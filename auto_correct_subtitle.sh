@@ -83,15 +83,27 @@ while IFS= read -r line; do
         continue
     fi
     
+    # 提取時間戳記、行號、原文和修正內容
+    if [[ "$line" =~ ^\[(.*?)\] ]]; then
+        # 提取時間戳記
+        timestamp="${BASH_REMATCH[1]}"
+        # 移除時間戳記部分，處理剩餘內容
+        content_part="${line#*] }"
+    else
+        # 如果沒有時間戳記
+        timestamp="未知時間"
+        content_part="$line"
+    fi
+    
     # 提取行號、原文和修正內容，忽略註記部分
-    if [[ "$line" == *" - "* ]]; then
+    if [[ "$content_part" == *" - "* ]]; then
         # 有註記的情況
-        main_part=$(echo "$line" | sed 's/\s*-.*$//')
-        note_part=$(echo "$line" | sed 's/^.*-\s*//')
+        main_part=$(echo "$content_part" | sed 's/\s*-.*$//')
+        note_part=$(echo "$content_part" | sed 's/^.*-\s*//')
         IFS=':' read -r line_number original corrected <<< "$main_part"
     else
         # 沒有註記的情況
-        IFS=':' read -r line_number original corrected <<< "$line"
+        IFS=':' read -r line_number original corrected <<< "$content_part"
         note_part=""
     fi
     
@@ -130,11 +142,11 @@ while IFS= read -r line; do
     corrected_escaped=$(echo "$corrected" | sed 's/[\/&]/\\&/g')
     sed -i "${line_number}s/$original_escaped/$corrected_escaped/g" "$OUTPUT_FILE"
     
-    # 輸出修正訊息，如果有註記則同時顯示
+    # 輸出修正訊息，包含時間戳記
     if [[ -n "$note_part" ]]; then
-        echo "已修正第 $line_number 行: '$original' -> '$corrected' - $note_part"
+        echo "[$timestamp] 已修正第 $line_number 行: '$original' -> '$corrected' - $note_part"
     else
-        echo "已修正第 $line_number 行: '$original' -> '$corrected'"
+        echo "[$timestamp] 已修正第 $line_number 行: '$original' -> '$corrected'"
     fi
     
     ((CORRECTIONS_COUNT++))
