@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 字幕自動校正腳本 v3.5
+# 字幕自動校正腳本 v3.6
 # 
 # 功能說明：
 # 1. 自動從corrections.txt讀取Claude提供的錯字修正建議
@@ -9,6 +9,7 @@
 # 4. 在執行前會創建備份檔案以防止資料丟失
 # 5. 備份檔案保存在腳本所在目錄
 # 6. 支持透過字幕編號進行精確替換，如找不到則自動退回到全文搜索
+# 7. 在末端顯示無法處理的建議詳情
 #
 # 使用方法: ./auto_correct_subtitle.sh <subtitle.srt> [選項]
 # 例如: ./auto_correct_subtitle.sh my_subtitle.srt
@@ -23,7 +24,7 @@
 
 # 標題和版本資訊
 echo "==================================================="
-echo "           SRT 字幕自動校正腳本 v3.5              "
+echo "           SRT 字幕自動校正腳本 v3.6              "
 echo "==================================================="
 
 # 默認設置
@@ -117,6 +118,9 @@ CORRECTIONS_COUNT=0
 KNOWN_WORDS_COUNT=0
 ERRORS_COUNT=0
 
+# 記錄無法處理的建議
+declare -a ERROR_SUGGESTIONS
+
 # 函數：使用全文搜索方式替換文本
 do_global_search_replace() {
     local timestamp="$1"
@@ -149,6 +153,7 @@ do_global_search_replace() {
         return 0 # 成功
     else
         echo "警告: 找不到原文: '$original'"
+        ERROR_SUGGESTIONS+=("[$timestamp] 字幕編號 $subtitle_number - 找不到原文: '$original' -> '$corrected'")
         return 1 # 失敗
     fi
 }
@@ -185,6 +190,7 @@ if [ "$HAS_CORRECTIONS" = true ]; then
             # 檢查是否成功解析
             if [[ -z "$subtitle_number" || -z "$original" || -z "$corrected" ]]; then
                 echo "警告: 無法解析建議內容: $line"
+                ERROR_SUGGESTIONS+=("無法解析建議內容: $line")
                 ((ERRORS_COUNT++))
                 continue
             fi
@@ -278,6 +284,7 @@ if [ "$HAS_CORRECTIONS" = true ]; then
             fi
         else
             echo "警告: 無法識別時間戳記格式: $line"
+            ERROR_SUGGESTIONS+=("無法識別時間戳記格式: $line")
             ((ERRORS_COUNT++))
             continue
         fi
@@ -312,6 +319,7 @@ if [ "$HAS_KNOWN_WORDS" = true ]; then
         # 檢查是否成功解析
         if [[ -z "$original" || -z "$corrected" ]]; then
             echo "警告: 無法解析常見錯字: $line"
+            ERROR_SUGGESTIONS+=("無法解析常見錯字: $line")
             ((ERRORS_COUNT++))
             continue
         fi
@@ -359,6 +367,7 @@ if [ "$HAS_KNOWN_WORDS" = true ]; then
             ((KNOWN_WORDS_COUNT++))
         else
             echo "警告: 替換 '$original' 後文件行數改變，可能發生錯誤！"
+            ERROR_SUGGESTIONS+=("替換 '$original' -> '$corrected' 後文件行數改變")
             # 還原到備份
             cp "$BACKUP_FILE" "$SRT_FILE"
             echo "已還原到備份檔案！"
@@ -376,6 +385,11 @@ echo "Claude建議修正: $CORRECTIONS_COUNT 個"
 echo "常見錯字替換: $KNOWN_WORDS_COUNT 個"
 if [ $ERRORS_COUNT -gt 0 ]; then
     echo "遇到 $ERRORS_COUNT 個無法處理的建議。"
+    echo -e "\n===== 無法處理的建議詳情 ====="
+    for error in "${ERROR_SUGGESTIONS[@]}"; do
+        echo "- $error"
+    done
+    echo "=================================="
 fi
 echo "原始檔案備份為: $BACKUP_FILE (位於腳本目錄)"
 echo "原始檔案已被直接修改"
