@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 字幕自動校正腳本 v4.0
+# 字幕自動校正腳本 v4.1
 # 
 # 功能說明：
 # 1. 自動從corrections.txt讀取Claude提供的錯字修正建議
@@ -15,6 +15,7 @@
 # 例如: ./auto_correct_subtitle.sh my_subtitle.srt
 # 選項:
 #   --no-subtitle-id  不使用字幕編號進行替換，直接用全文搜索方式
+#   --debug           顯示更詳細的除錯訊息
 #
 # 檔案說明:
 # - corrections.txt: Claude提供的錯字修正建議，格式為 "[任意時間標記] 行號:原文:修正後 - 說明"
@@ -24,17 +25,20 @@
 
 # 標題和版本資訊
 echo "==================================================="
-echo "           SRT 字幕自動校正腳本 v4.0              "
+echo "           SRT 字幕自動校正腳本 v4.1              "
 echo "==================================================="
 
 # 默認設置
 USE_SUBTITLE_ID=true
+DEBUG_MODE=false
 
 # 處理參數
 SRT_FILE=""
 for arg in "$@"; do
     if [[ "$arg" == "--no-subtitle-id" ]]; then
         USE_SUBTITLE_ID=false
+    elif [[ "$arg" == "--debug" ]]; then
+        DEBUG_MODE=true
     elif [[ "$arg" != -* ]]; then
         SRT_FILE="$arg"
     fi
@@ -46,6 +50,7 @@ if [ -z "$SRT_FILE" ]; then
     echo "例如: $0 my_subtitle.srt"
     echo "選項:"
     echo "  --no-subtitle-id  不使用字幕編號進行替換，直接用全文搜索方式"
+    echo "  --debug           顯示更詳細的除錯訊息"
     exit 1
 fi
 
@@ -73,6 +78,9 @@ if [ "$USE_SUBTITLE_ID" = true ]; then
     echo "替換模式: 優先使用字幕編號進行替換，找不到時自動退回到全文搜索"
 else
     echo "替換模式: 使用全文搜索方式（不考慮字幕編號）"
+fi
+if [ "$DEBUG_MODE" = true ]; then
+    echo "除錯模式: 開啟"
 fi
 
 # 檢查SRT檔案是否存在
@@ -158,17 +166,105 @@ do_global_search_replace() {
     fi
 }
 
+# 函數：簡單解析冒號分隔的字串
+parse_colon_separated() {
+    local input="$1"
+    local num_colons=$(echo "$input" | grep -o ":" | wc -l)
+    
+    if [ "$DEBUG_MODE" = true ]; then
+        echo "DEBUG: 解析輸入: '$input'"
+        echo "DEBUG: 冒號數量: $num_colons"
+    fi
+    
+    # 如果只有一個冒號，視為無效格式
+    if [ "$num_colons" -lt 2 ]; then
+        if [ "$DEBUG_MODE" = true ]; then
+            echo "DEBUG: 冒號數量不足，需要至少2個冒號"
+        fi
+        return 1
+    fi
+    
+    # 提取第一個部分（字幕編號）
+    local subtitle_number=$(echo "$input" | cut -d':' -f1 | sed 's/^ *//;s/ *$//')
+    
+    # 提取中間部分（原文）- 這是第一個和第二個冒號之間的內容
+    local original_part=""
+    if [ "$num_colons" -eq 2 ]; then
+        # 簡單情況：只有2個冒號
+        original_part=$(echo "$input" | cut -d':' -f2 | sed 's/^ *//;s/ *$//')
+    else
+        # 複雜情況：超過2個冒號，需要特殊處理
+        # 先提取第一個冒號後的所有內容
+        local rest_part=$(echo "$input" | cut -d':' -f2- | sed 's/^ *//;s/ *$//')
+        
+        # 找出最後一個冒號的位置
+        local last_colon_pos=$(echo "$rest_part" | awk -F: '{print length($0)-length($NF)-1}')
+        
+        if [ "$DEBUG_MODE" = true ]; then
+            echo "DEBUG: 剩餘部分: '$rest_part'"
+            echo "DEBUG: 最後冒號位置: $last_colon_pos"
+        fi
+        
+        # 提取原文（從開頭到最後一個冒號）
+        original_part=${rest_part:0:$last_colon_pos}
+    fi
+    
+    # 提取最後部分（修正後）
+    local corrected_part=$(echo "$input" | rev | cut -d':' -f1 | rev | sed 's/^ *//;s/ *$//')
+    
+    # 檢查是否有註解
+    if [[ "$corrected_part" == *" - "* ]]; then
+        corrected_part=$(echo "$corrected_part" | cut -d '-' -f1 | sed 's/^ *//;s/ *$//')
+    fi
+    
+    if [ "$DEBUG_MODE" = true ]; then
+        echo "DEBUG: 解析結果 - 字幕編號: '$subtitle_number', 原文: '$original_part', 修正後: '$corrected_part'"
+    fi
+    
+    # 檢查是否成功解析所有部分
+    if [[ -z "$subtitle_number" || -z "$original_part" || -z "$corrected_part" ]]; then
+        if [ "$DEBUG_MODE" = true ]; then
+            echo "DEBUG: 解析失敗，有空字段"
+            echo "DEBUG: 字幕編號: '$subtitle_number'"
+            echo "DEBUG: 原文: '$original_part'"
+            echo "DEBUG: 修正後: '$corrected_part'"
+        fi
+        return 1
+    fi
+    
+    # 將結果存儲在全局變數中
+    RESULT_SUBTITLE_NUMBER="$subtitle_number"
+    RESULT_ORIGINAL="$original_part"
+    RESULT_CORRECTED="$corrected_part"
+    
+    return 0
+}
+
 # 處理 Claude 建議的修正
 if [ "$HAS_CORRECTIONS" = true ]; then
     echo -e "\n開始套用Claude建議的修正..."
     
+    line_num=0
     while IFS= read -r line; do
+        ((line_num++))
+        
         # 跳過空行、註釋行和只有"-"的行
-        if [[ -z "$line" || "$line" == \#* || "$line" == "-" || "$line" == "-"* ]]; then
+        if [[ -z "$line" || "$line" == \#* || "$line" == "-" || "$line" == "- "* ]]; then
+            if [ "$DEBUG_MODE" = true ]; then
+                echo "DEBUG: 跳過第 $line_num 行: $line"
+            fi
             continue
         fi
         
-        # 檢測是否包含方括號格式 [任意內容]，不再限制時間戳記格式
+        # 如果以"我已檢查"或類似描述性文字開頭，視為註釋並跳過
+        if [[ "$line" == "我已檢查"* || "$line" == *"發現以下"* ]]; then
+            if [ "$DEBUG_MODE" = true ]; then
+                echo "DEBUG: 跳過描述性文字第 $line_num 行: $line"
+            fi
+            continue
+        fi
+        
+        # 檢測是否包含方括號格式 [任意內容]
         if echo "$line" | grep -q -E '^\[.*\]'; then
             # 提取任意時間標記
             timestamp=$(echo "$line" | grep -o -E '^\[.*\]' | tr -d '[]')
@@ -176,178 +272,25 @@ if [ "$HAS_CORRECTIONS" = true ]; then
             # 移除時間戳記部分，獲取剩餘部分
             content_part=$(echo "$line" | sed -E 's/^\[.*\] //')
             
-            # 嘗試解析內容部分
-            # 首先查找第一個冒號位置
-            first_colon=$(echo "$content_part" | awk -F':' '{print index($0, ":")}')
-            
-            if [ -z "$first_colon" ] || [ "$first_colon" -eq 0 ]; then
-                echo "警告: 找不到冒號分隔符: $line"
-                ERROR_SUGGESTIONS+=("無法解析修正建議，找不到冒號分隔符: $line")
-                ((ERRORS_COUNT++))
-                continue
+            if [ "$DEBUG_MODE" = true ]; then
+                echo "DEBUG: 處理含時間戳行: $line"
+                echo "DEBUG: 時間戳記: $timestamp"
+                echo "DEBUG: 內容部分: $content_part"
             fi
             
-            # 提取字幕編號 (第一個冒號前)
-            subtitle_number=$(echo "$content_part" | cut -d':' -f1 | sed 's/^ *//;s/ *$//')
-            
-            # 嘗試找出第二個冒號的位置
-            remaining_part=${content_part:$first_colon}
-            second_colon=$(echo "$remaining_part" | awk -F':' '{print index($0, ":")}')
-            
-            if [ -z "$second_colon" ] || [ "$second_colon" -eq 0 ]; then
-                echo "警告: 找不到第二個冒號分隔符: $line"
-                ERROR_SUGGESTIONS+=("無法解析修正建議，找不到第二個冒號分隔符: $line")
-                ((ERRORS_COUNT++))
-                continue
-            fi
-            
-            # 計算原文開始和結束位置
-            original_start=$((first_colon + 1))
-            original_end=$((first_colon + second_colon - 1))
-            
-            # 提取原文和修正後的內容
-            original=${content_part:$original_start:$((original_end - original_start))}
-            corrected=${content_part:$((original_end + 1))}
-            
-            # 如果修正後的內容包含註解(如「- 說明」)，只保留修正部分
-            if [[ "$corrected" == *" - "* ]]; then
-                corrected=$(echo "$corrected" | cut -d '-' -f1 | sed 's/^ *//;s/ *$//')
-            fi
-            
-            # 處理可能的空格
-            subtitle_number=$(echo "$subtitle_number" | sed 's/^ *//;s/ *$//')
-            original=$(echo "$original" | sed 's/^ *//;s/ *$//')
-            corrected=$(echo "$corrected" | sed 's/^ *//;s/ *$//')
-            
-            # 檢查是否成功解析
-            if [[ -z "$subtitle_number" || -z "$original" || -z "$corrected" ]]; then
-                echo "警告: 無法解析建議內容: $line"
-                ERROR_SUGGESTIONS+=("無法解析建議內容: $line")
-                ((ERRORS_COUNT++))
-                continue
-            fi
-            
-            # 根據選擇的模式進行替換
-            if [ "$USE_SUBTITLE_ID" = true ] && [[ "$subtitle_number" =~ ^[0-9]+$ ]]; then
-                # 使用字幕編號進行替換
-                # 暫存檔案路徑
-                TEMP_FILE=$(mktemp)
+            # 使用改進的解析函數
+            if parse_colon_separated "$content_part"; then
+                subtitle_number="$RESULT_SUBTITLE_NUMBER"
+                original="$RESULT_ORIGINAL"
+                corrected="$RESULT_CORRECTED"
                 
-                # 處理字幕文件的變數
-                current_subtitle=""
-                in_subtitle=false
-                found=false
-                line_number=0
-                
-                # 讀取SRT文件並進行特定字幕編號的替換
-                while IFS= read -r srt_line; do
-                    ((line_number++))
-                    
-                    # 檢查是否為純數字行（字幕編號）
-                    if [[ "$srt_line" =~ ^[0-9]+$ ]]; then
-                        if [ "$in_subtitle" = true ]; then
-                            # 寫入之前處理過的字幕
-                            echo "$current_subtitle" >> "$TEMP_FILE"
-                        fi
-                        
-                        # 新的字幕開始
-                        current_subtitle="$srt_line"
-                        in_subtitle=true
-                        
-                        # 檢查是否為目標字幕編號
-                        if [ "$srt_line" = "$subtitle_number" ]; then
-                            target_subtitle=true
-                        else
-                            target_subtitle=false
-                        fi
-                    elif [ "$in_subtitle" = true ]; then
-                        # 在字幕內部
-                        if [ "$target_subtitle" = true ] && echo "$srt_line" | grep -q "$original"; then
-                            # 進行替換
-                            original_escaped=$(echo "$original" | sed 's/[\/&]/\\&/g')
-                            corrected_escaped=$(echo "$corrected" | sed 's/[\/&]/\\&/g')
-                            new_line=$(echo "$srt_line" | sed "s/$original_escaped/$corrected_escaped/g")
-                            current_subtitle="$current_subtitle"$'\n'"$new_line"
-                            found=true
-                            replace_line_number=$line_number
-                        else
-                            # 正常添加行
-                            current_subtitle="$current_subtitle"$'\n'"$srt_line"
-                        fi
-                    else
-                        # 不在字幕內部，直接寫入
-                        echo "$srt_line" >> "$TEMP_FILE"
-                    fi
-                done < "$SRT_FILE"
-                
-                # 處理最後一個字幕
-                if [ "$in_subtitle" = true ]; then
-                    echo "$current_subtitle" >> "$TEMP_FILE"
+                if [ "$DEBUG_MODE" = true ]; then
+                    echo "DEBUG: 解析成功 - 字幕編號: $subtitle_number, 原文: $original, 修正後: $corrected"
                 fi
                 
-                # 如果在指定字幕中找到並替換了文字
-                if [ "$found" = true ]; then
-                    # 用處理後的文件替換原文件
-                    mv "$TEMP_FILE" "$SRT_FILE"
-                    
-                    # 輸出修正信息
-                    echo "[$timestamp] 已修正 (字幕編號 $subtitle_number, 行 $replace_line_number): '$original' -> '$corrected'"
-                    ((CORRECTIONS_COUNT++))
-                else
-                    # 在指定字幕中找不到要替換的文字，嘗試使用全文搜索
-                    echo "在字幕編號 $subtitle_number 中找不到原文，嘗試使用全文搜索..."
-                    # 移除臨時文件
-                    rm "$TEMP_FILE"
-                    
-                    # 使用全文搜索方式替換
-                    if do_global_search_replace "$timestamp" "$subtitle_number" "$original" "$corrected"; then
-                        ((CORRECTIONS_COUNT++))
-                    else
-                        ((ERRORS_COUNT++))
-                    fi
-                fi
-            else
-                # 直接使用全文搜索方式（原始方法）
-                if do_global_search_replace "$timestamp" "$subtitle_number" "$original" "$corrected"; then
-                    ((CORRECTIONS_COUNT++))
-                else
-                    ((ERRORS_COUNT++))
-                fi
-            fi
-        else
-            # 檢查是否可能是純粹的文字修正格式（無時間戳記，直接是編號:原文:修正）
-            if echo "$line" | grep -q -E '^[0-9]+:.*:.*$'; then
-                # 提取字幕編號、原文和修正後內容
-                subtitle_number=$(echo "$line" | cut -d':' -f1)
-                original=$(echo "$line" | cut -d':' -f2)
-                corrected=$(echo "$line" | cut -d':' -f3-)
-                
-                # 如果修正後的內容包含註解，只保留修正部分
-                if [[ "$corrected" == *" - "* ]]; then
-                    corrected=$(echo "$corrected" | cut -d '-' -f1 | sed 's/^ *//;s/ *$//')
-                fi
-                
-                # 處理可能的空格
-                subtitle_number=$(echo "$subtitle_number" | sed 's/^ *//;s/ *$//')
-                original=$(echo "$original" | sed 's/^ *//;s/ *$//')
-                corrected=$(echo "$corrected" | sed 's/^ *//;s/ *$//')
-                
-                # 使用無時間戳記的標識
-                timestamp="無時間標記"
-                
-                # 檢查是否成功解析
-                if [[ -z "$subtitle_number" || -z "$original" || -z "$corrected" ]]; then
-                    echo "警告: 無法解析建議內容: $line"
-                    ERROR_SUGGESTIONS+=("無法解析建議內容: $line")
-                    ((ERRORS_COUNT++))
-                    continue
-                fi
-                
-                # 使用與前面相同的替換邏輯
+                # 根據選擇的模式進行替換
                 if [ "$USE_SUBTITLE_ID" = true ] && [[ "$subtitle_number" =~ ^[0-9]+$ ]]; then
-                    # 與前面代碼相同的替換邏輯，這裡略去重複代碼
-                    # ...（複製上面的字幕編號替換邏輯）
-                    
+                    # 使用字幕編號進行替換
                     # 暫存檔案路徑
                     TEMP_FILE=$(mktemp)
                     
@@ -355,11 +298,11 @@ if [ "$HAS_CORRECTIONS" = true ]; then
                     current_subtitle=""
                     in_subtitle=false
                     found=false
-                    line_number=0
+                    srt_line_number=0
                     
                     # 讀取SRT文件並進行特定字幕編號的替換
                     while IFS= read -r srt_line; do
-                        ((line_number++))
+                        ((srt_line_number++))
                         
                         # 檢查是否為純數字行（字幕編號）
                         if [[ "$srt_line" =~ ^[0-9]+$ ]]; then
@@ -387,7 +330,7 @@ if [ "$HAS_CORRECTIONS" = true ]; then
                                 new_line=$(echo "$srt_line" | sed "s/$original_escaped/$corrected_escaped/g")
                                 current_subtitle="$current_subtitle"$'\n'"$new_line"
                                 found=true
-                                replace_line_number=$line_number
+                                replace_line_number=$srt_line_number
                             else
                                 # 正常添加行
                                 current_subtitle="$current_subtitle"$'\n'"$srt_line"
@@ -425,12 +368,130 @@ if [ "$HAS_CORRECTIONS" = true ]; then
                         fi
                     fi
                 else
-                    # 直接使用全文搜索方式
+                    # 直接使用全文搜索方式（原始方法）
                     if do_global_search_replace "$timestamp" "$subtitle_number" "$original" "$corrected"; then
                         ((CORRECTIONS_COUNT++))
                     else
                         ((ERRORS_COUNT++))
                     fi
+                fi
+            else
+                echo "警告: 無法解析建議內容: $line"
+                if [ "$DEBUG_MODE" = true ]; then
+                    echo "DEBUG: 解析失敗的行: $line"
+                fi
+                ERROR_SUGGESTIONS+=("無法解析建議內容: $line")
+                ((ERRORS_COUNT++))
+                continue
+            fi
+        else
+            # 檢查是否可能是純粹的文字修正格式（無時間戳記，直接是編號:原文:修正）
+            if echo "$line" | grep -q -E '^[0-9]+:.*:.*$'; then
+                if [ "$DEBUG_MODE" = true ]; then
+                    echo "DEBUG: 處理無時間戳行: $line"
+                fi
+                
+                # 使用改進的解析函數
+                if parse_colon_separated "$line"; then
+                    subtitle_number="$RESULT_SUBTITLE_NUMBER"
+                    original="$RESULT_ORIGINAL"
+                    corrected="$RESULT_CORRECTED"
+                    
+                    # 使用無時間戳記的標識
+                    timestamp="無時間標記"
+                    
+                    # 使用與前面相同的替換邏輯
+                    if [ "$USE_SUBTITLE_ID" = true ] && [[ "$subtitle_number" =~ ^[0-9]+$ ]]; then
+                        # 與前面代碼相同的替換邏輯
+                        # 暫存檔案路徑
+                        TEMP_FILE=$(mktemp)
+                        
+                        # 處理字幕文件的變數
+                        current_subtitle=""
+                        in_subtitle=false
+                        found=false
+                        srt_line_number=0
+                        
+                        # 讀取SRT文件並進行特定字幕編號的替換
+                        while IFS= read -r srt_line; do
+                            ((srt_line_number++))
+                            
+                            # 檢查是否為純數字行（字幕編號）
+                            if [[ "$srt_line" =~ ^[0-9]+$ ]]; then
+                                if [ "$in_subtitle" = true ]; then
+                                    # 寫入之前處理過的字幕
+                                    echo "$current_subtitle" >> "$TEMP_FILE"
+                                fi
+                                
+                                # 新的字幕開始
+                                current_subtitle="$srt_line"
+                                in_subtitle=true
+                                
+                                # 檢查是否為目標字幕編號
+                                if [ "$srt_line" = "$subtitle_number" ]; then
+                                    target_subtitle=true
+                                else
+                                    target_subtitle=false
+                                fi
+                            elif [ "$in_subtitle" = true ]; then
+                                # 在字幕內部
+                                if [ "$target_subtitle" = true ] && echo "$srt_line" | grep -q "$original"; then
+                                    # 進行替換
+                                    original_escaped=$(echo "$original" | sed 's/[\/&]/\\&/g')
+                                    corrected_escaped=$(echo "$corrected" | sed 's/[\/&]/\\&/g')
+                                    new_line=$(echo "$srt_line" | sed "s/$original_escaped/$corrected_escaped/g")
+                                    current_subtitle="$current_subtitle"$'\n'"$new_line"
+                                    found=true
+                                    replace_line_number=$srt_line_number
+                                else
+                                    # 正常添加行
+                                    current_subtitle="$current_subtitle"$'\n'"$srt_line"
+                                fi
+                            else
+                                # 不在字幕內部，直接寫入
+                                echo "$srt_line" >> "$TEMP_FILE"
+                            fi
+                        done < "$SRT_FILE"
+                        
+                        # 處理最後一個字幕
+                        if [ "$in_subtitle" = true ]; then
+                            echo "$current_subtitle" >> "$TEMP_FILE"
+                        fi
+                        
+                        # 如果在指定字幕中找到並替換了文字
+                        if [ "$found" = true ]; then
+                            # 用處理後的文件替換原文件
+                            mv "$TEMP_FILE" "$SRT_FILE"
+                            
+                            # 輸出修正信息
+                            echo "[$timestamp] 已修正 (字幕編號 $subtitle_number, 行 $replace_line_number): '$original' -> '$corrected'"
+                            ((CORRECTIONS_COUNT++))
+                        else
+                            # 在指定字幕中找不到要替換的文字，嘗試使用全文搜索
+                            echo "在字幕編號 $subtitle_number 中找不到原文，嘗試使用全文搜索..."
+                            # 移除臨時文件
+                            rm "$TEMP_FILE"
+                            
+                            # 使用全文搜索方式替換
+                            if do_global_search_replace "$timestamp" "$subtitle_number" "$original" "$corrected"; then
+                                ((CORRECTIONS_COUNT++))
+                            else
+                                ((ERRORS_COUNT++))
+                            fi
+                        fi
+                    else
+                        # 直接使用全文搜索方式
+                        if do_global_search_replace "$timestamp" "$subtitle_number" "$original" "$corrected"; then
+                            ((CORRECTIONS_COUNT++))
+                        else
+                            ((ERRORS_COUNT++))
+                        fi
+                    fi
+                else
+                    echo "警告: 無法解析建議內容: $line"
+                    ERROR_SUGGESTIONS+=("無法解析建議內容: $line")
+                    ((ERRORS_COUNT++))
+                    continue
                 fi
             else
                 echo "警告: 無法識別格式: $line"
