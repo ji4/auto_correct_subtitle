@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 字幕自動校正腳本 v4.1
+# 字幕自動校正腳本 v4.2
 # 
 # 功能說明：
 # 1. 自動從corrections.txt讀取Claude提供的錯字修正建議
@@ -25,7 +25,7 @@
 
 # 標題和版本資訊
 echo "==================================================="
-echo "           SRT 字幕自動校正腳本 v4.1              "
+echo "           SRT 字幕自動校正腳本 v4.2              "
 echo "==================================================="
 
 # 默認設置
@@ -111,11 +111,10 @@ if [ "$HAS_CORRECTIONS" = false ] && [ "$HAS_KNOWN_WORDS" = false ]; then
     exit 1
 fi
 
-# 如果備份檔案已存在，先刪除它
-if [ -f "$BACKUP_FILE" ]; then
-    echo "發現腳本目錄下存在舊的備份檔案，將被刪除..."
-    rm "$BACKUP_FILE"
-fi
+# 刪除腳本目錄下所有的.bak檔案
+echo "刪除腳本目錄下所有的.bak檔案..."
+find "$SCRIPT_DIR" -name "*.bak" -type f -delete
+echo "已清理腳本目錄下的所有備份檔案"
 
 # 創建備份
 cp "$SRT_FILE" "$BACKUP_FILE"
